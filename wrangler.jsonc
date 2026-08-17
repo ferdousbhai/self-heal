@@ -1,0 +1,57 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "self-heal",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-05-26",
+  "compatibility_flags": ["nodejs_compat"],
+
+  "vars": {
+    // owner/repo that errors are fixed in (can be overridden per request).
+    "REPO": "ferdousbhai/summon-ghost",
+    "DEFAULT_BRANCH": "master",
+    "INSTALL_COMMAND": "pnpm install --frozen-lockfile",
+    // DeepSeek V4 via Cloudflare Workers AI.
+    "MODEL": "@cf/deepseek-ai/deepseek-v4-pro-0813",
+    "CLOUDFLARE_ACCOUNT_ID": "0af9e0921b880657d84a6c07307f8aef",
+    // Admission control (defaults; overridable).
+    "COOLDOWN_HOURS": "24",
+    "MAX_RUNS_PER_HOUR": "5"
+  },
+
+  "workflows": [
+    {
+      "name": "fix-workflow",
+      "binding": "FIX_WORKFLOW",
+      "class_name": "FixWorkflow"
+    }
+  ],
+
+  "containers": [
+    {
+      "class_name": "FixAgent",
+      "image": "./Dockerfile",
+      "instance_type": "standard-2",
+      "max_instances": 5,
+      "rollout_active_grace_period": 0,
+      "rollout_step_percentage": [100]
+    }
+  ],
+
+  "durable_objects": {
+    "bindings": [
+      { "name": "FIX_AGENT", "class_name": "FixAgent" }
+    ]
+  },
+
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["FixAgent"] }
+  ],
+
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "self-heal-db",
+      "database_id": "REPLACE_WITH_DATABASE_ID"
+    }
+  ]
+}
