@@ -12,7 +12,7 @@ export interface Env {
   CLOUDFLARE_ACCOUNT_ID: string;
   COOLDOWN_HOURS: string;
   MAX_RUNS_PER_HOUR: string;
-  // secrets (Cloudflare Secrets Store bindings, see wrangler.jsonc)
+  // secrets (Cloudflare Worker secrets, set with `wrangler secret put ...`)
   TRIGGER_SECRET: string;
   CLOUDFLARE_API_KEY: string;
   GITHUB_TOKEN: string;
