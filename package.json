@@ -12,6 +12,7 @@
     "types": "wrangler types",
     "db:create": "wrangler d1 create self-heal-db",
     "db:init": "wrangler d1 execute self-heal-db --file=db/migrations/0001_init.sql",
+    "app:promote": "bash scripts/promote-app-key.sh",
     "db:init:local": "wrangler d1 execute self-heal-db --local --file=db/migrations/0001_init.sql"
   },
   "dependencies": {

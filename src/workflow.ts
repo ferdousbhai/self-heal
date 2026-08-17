@@ -64,12 +64,11 @@ export class FixWorkflow extends WorkflowEntrypoint<Env, FixWorkflowParams> {
       // the instance record and printed by `wrangler workflows instances
       // describe`. Minting here costs one API call per replay and keeps the
       // credential out of durable storage entirely.
-      const app = await this.env.DB.prepare(
-        "SELECT app_id, private_key FROM github_app WHERE id = 1",
-      ).first<{ app_id: string; private_key: string }>();
-      if (!app) throw new Error("no github app configured — visit /app/setup");
+      if (!this.env.GITHUB_APP_ID || !this.env.GITHUB_APP_KEY) {
+        throw new Error("no github app configured — run /app/setup, then `pnpm app:promote`");
+      }
       const token = await installationToken(
-        { appId: app.app_id, privateKey: app.private_key },
+        { appId: this.env.GITHUB_APP_ID, privateKey: this.env.GITHUB_APP_KEY },
         repo,
       );
 

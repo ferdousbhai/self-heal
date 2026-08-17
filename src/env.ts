@@ -13,10 +13,13 @@ export interface Env {
   MAX_RUNS_PER_HOUR: string;
   // secrets (Cloudflare Worker secrets, set with `wrangler secret put ...`)
   //
-  // No GitHub credential here: self-heal authenticates as a GitHub App, whose
-  // private key reaches D1 through the manifest flow and mints a fresh
-  // one-hour installation token per run. See src/github.ts.
   TRIGGER_SECRET: string;
+  // GitHub App credentials. Cloudflare's guidance is that sensitive values
+  // belong in secrets or a Secrets Store binding, not in ordinary storage, so
+  // these live here rather than in D1 — the manifest flow only parks the key
+  // in D1 long enough for `pnpm app:promote` to move it. See src/github.ts.
+  GITHUB_APP_ID: string;
+  GITHUB_APP_KEY: string;
   // bindings
   AI: Ai;
   DB: D1Database;

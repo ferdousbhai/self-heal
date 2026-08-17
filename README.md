@@ -69,15 +69,39 @@ pnpm deploy
 
 Then create the GitHub App by visiting **`/app/setup`** on the deployed Worker. This runs
 GitHub's [App manifest flow](https://docs.github.com/en/apps/sharing-github-apps/registering-a-github-app-from-a-manifest):
-GitHub creates the App and returns its private key *over the API*, which the callback
-writes into D1 — so the key goes straight from GitHub to Cloudflare and never touches your
-machine. The App requests exactly `contents: write` and `pull_requests: write`.
+GitHub creates the App and returns its private key *over the API* rather than as a browser
+download, so the key goes from GitHub to Cloudflare without ever touching your machine.
+The App requests exactly `contents: write` and `pull_requests: write`.
 
-Finish by installing the App on the repositories self-heal may open PRs against (the
-callback page links straight to it). Each run then mints a fresh **installation token**
-that expires in an hour: there is no standing credential capable of writing to your repos.
+Two steps finish the setup:
 
-`/app/setup` is single-use — once a `github_app` row exists, both setup routes return 409.
+```bash
+# 4. Install the App on the repos self-heal may open PRs against
+#    (the callback page links straight to it)
+
+# 5. Move the key out of its D1 staging row into Worker secrets, then redeploy
+pnpm app:promote
+pnpm deploy
+```
+
+Each run then mints a fresh **installation token** that expires in an hour: there is no
+standing credential capable of writing to your repositories.
+
+`/app/setup` is single-use — while a `github_app` row exists, both setup routes return 409.
+
+### Why the key passes through D1
+
+A Worker cannot write its own secrets (`wrangler secret put` is a deploy-time operation),
+but the manifest flow hands the key to the Worker *at runtime*. D1 is the only place the
+Worker can put it in that moment.
+
+D1 is a database, not a secret store, and
+[Cloudflare's guidance](https://developers.cloudflare.com/workers/configuration/secrets/)
+is that sensitive values belong in secrets or a Secrets Store binding. So the row is
+**staging, not storage**: `pnpm app:promote` pipes it into `GITHUB_APP_ID` /
+`GITHUB_APP_KEY` and deletes it, without the value being printed, written to a file, or
+entering shell history. Until you run it, runs fail with "no github app configured" —
+deliberately, so a private key cannot quietly live on in a database.
 
 Update the `vars` in `wrangler.jsonc` (`REPO`, `DEFAULT_BRANCH`, `MODEL`, `MAX_AGENT_STEPS`).
 
