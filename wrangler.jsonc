@@ -54,7 +54,10 @@
     {
       "binding": "DB",
       "database_name": "self-heal-db",
-      "database_id": "40f86fb7-177c-4b7b-b2a8-e6576cdaa467"
+      "database_id": "40f86fb7-177c-4b7b-b2a8-e6576cdaa467",
+      // Applied with `pnpm db:migrate`, which tracks what has already run.
+      // Applying a single file by hand silently skips later migrations.
+      "migrations_dir": "db/migrations"
     }
   ]
 }

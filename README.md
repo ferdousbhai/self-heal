@@ -57,7 +57,7 @@ pnpm install
 
 # 1. D1 database
 pnpm db:create              # prints the database_id → put it in wrangler.jsonc
-pnpm db:init                # add --remote for the production database
+pnpm db:migrate             # applies every migration in db/migrations
 
 # 2. Trigger secret (stored in Cloudflare, never on disk — piped via stdin so
 #    it never lands in shell history)
