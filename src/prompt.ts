@@ -35,12 +35,12 @@ export const FIX_SYSTEM_PROMPT = [
   "- Do not touch `.git/`, lockfiles, CI config, or any secret material (`.env`, credentials, keys).",
   "  A change touching those paths is rejected outright and your fix is discarded.",
   "",
-  "Finish by replying with exactly one marker as the FIRST line of your final message:",
-  "  FIX: <one-line summary of what you changed>",
-  "  NOOP: <one-line reason this cannot be fixed by a code change in this repo>",
+"You MUST finish by calling the `report_verdict` tool exactly once. It is the only way to end your turn,",
+  "and nothing you write as prose is read. Call it with `fix` once your edits are complete, or `noop` to give up.",
   "",
-  "Answer NOOP — and leave every file unchanged — if the error comes from infrastructure, a provider outage, a third party,",
-  "invalid user input, or if you cannot locate the cause with confidence. A wrong fix is worse than no fix, because it ships.",
+  "Report `noop` — and leave every file unchanged — if the error comes from infrastructure, a provider outage, a third party,",
+  "invalid user input, or if you cannot locate the cause with confidence. A wrong fix is worse than no fix.",
+  "If you are running low on steps and still have no confident fix, call `report_verdict` with `noop` rather than continuing.",
 ].join("\n");
 
 /** The per-run user message: the error report itself. */
@@ -61,12 +61,10 @@ export function buildFixPrompt(input: FixPromptInput): string {
 }
 
 /**
- * Extract the FIX/NOOP verdict from the agent's final message.
- *
- * Only the first line counts, as the prompt demands. Scanning the whole
- * message would let prose like "I first considered NOOP: … but settled on
- * FIX: …" resolve by whichever marker appears earlier, and would match a
- * quoted copy of the instructions.
+ * Fallback verdict parser, kept only for a model that ignores the tool and
+ * writes prose instead. The tool call is authoritative; this reads the first
+ * line and nothing else, so a quoted instruction or a "I considered NOOP…"
+ * aside cannot flip the result.
  */
 export function parseVerdict(output: string): FixVerdict {
   const match = (output.trim().split("\n", 1)[0] ?? "").match(/^(FIX|NOOP)\s*:/i);

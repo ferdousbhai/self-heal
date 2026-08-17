@@ -1,4 +1,5 @@
 import { type Env, intVar } from "./env";
+import { convertManifest } from "./github";
 import { verifySignature } from "./hmac";
 
 export { FixAgent } from "./agent";
@@ -48,8 +49,17 @@ async function admit(env: Env, input: {
   if (recent && (recent.status === "queued" || recent.status === "running")) {
     return { ok: false, reason: "a fix is already in progress for this error", code: "in_progress", status: 409 };
   }
-  if (recent && recent.outcome === "fixed" && Date.now() - recent.created_at < cooldownMs) {
-    return { ok: false, reason: "this error was fixed recently", code: "recently_fixed", status: 200 };
+  // A proposed fix suppresses repeats for the cooldown window, otherwise a
+  // recurring error opens a duplicate PR every time it fires. ("fixed" is the
+  // pre-PR-mode outcome name, kept so old rows still suppress.)
+  const settled = recent?.outcome === "proposed" || recent?.outcome === "fixed";
+  if (recent && settled && Date.now() - recent.created_at < cooldownMs) {
+    return {
+      ok: false,
+      reason: "a fix for this error was proposed recently",
+      code: "recently_proposed",
+      status: 200,
+    };
   }
 
   const since = Date.now() - 3_600_000;
@@ -69,12 +79,87 @@ async function admit(env: Env, input: {
   return { ok: true, runId };
 }
 
+/**
+ * GitHub App manifest flow.
+ *
+ * `/app/setup` renders a self-submitting form that POSTs an App manifest to
+ * GitHub; GitHub redirects back to `/app/callback?code=…`, which exchanges the
+ * code for the App's id and private key and stores them in D1. The key is
+ * returned over the API rather than downloaded, so it goes from GitHub to
+ * Cloudflare without ever landing on a developer machine.
+ *
+ * Single-use by construction: once a row exists, both routes stop working.
+ */
+async function handleAppSetup(url: URL, env: Env): Promise<Response> {
+  const existing = await env.DB.prepare("SELECT slug FROM github_app WHERE id = 1").first<{
+    slug: string;
+  }>();
+  if (existing) {
+    return Response.json(
+      {
+        error: "a github app is already configured",
+        slug: existing.slug,
+        hint: "delete the github_app row in D1 to re-run setup",
+      },
+      { status: 409 },
+    );
+  }
+
+  if (url.pathname === "/app/setup") {
+    const manifest = {
+      name: `self-heal-${crypto.randomUUID().slice(0, 8)}`,
+      url: "https://github.com/ferdousbhai/self-heal",
+      redirect_url: `${url.origin}/app/callback`,
+      public: false,
+      default_permissions: { contents: "write", pull_requests: "write" },
+      default_events: [],
+    };
+    const html = `<!doctype html><meta charset="utf-8"><title>self-heal setup</title>
+<body style="font-family:system-ui;padding:2rem">
+<p>Redirecting to GitHub to create the self-heal App…</p>
+<form id="f" method="post" action="https://github.com/settings/apps/new">
+<input type="hidden" name="manifest" value='${JSON.stringify(manifest).replace(/'/g, "&apos;")}'>
+<button type="submit">Continue to GitHub</button>
+</form>
+<script>document.getElementById("f").submit()</script>
+</body>`;
+    return new Response(html, { headers: { "content-type": "text/html; charset=utf-8" } });
+  }
+
+  const code = url.searchParams.get("code");
+  if (!code) return Response.json({ error: "missing code" }, { status: 400 });
+
+  const app = await convertManifest(code);
+  await env.DB.prepare(
+    "INSERT INTO github_app (id, app_id, slug, private_key, created_at) VALUES (1, ?, ?, ?, ?)",
+  )
+    .bind(app.appId, app.slug, app.privateKey, Date.now())
+    .run();
+
+  return new Response(
+    `<!doctype html><meta charset="utf-8"><title>self-heal setup</title>
+<body style="font-family:system-ui;padding:2rem;line-height:1.6">
+<h1>✅ GitHub App created</h1>
+<p><b>${app.slug}</b> (id ${app.appId}). The private key was stored in D1 and never touched your machine.</p>
+<p>Last step — install it on the repositories self-heal may open pull requests against:</p>
+<p><a href="${app.htmlUrl}/installations/new" style="font-size:1.2rem">Install ${app.slug} →</a></p>
+</body>`,
+    { headers: { "content-type": "text/html; charset=utf-8" } },
+  );
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
 
     if (url.pathname === "/health") {
       return Response.json({ ok: true });
+    }
+
+    // One-time GitHub App setup (manifest flow). Both routes refuse to run
+    // once credentials exist, so they cannot be used to replace the App.
+    if (url.pathname === "/app/setup" || url.pathname === "/app/callback") {
+      return handleAppSetup(url, env);
     }
 
     if (url.pathname !== "/fix" || request.method !== "POST") {

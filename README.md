@@ -1,12 +1,15 @@
 # self-heal
 
 Self-healing agent for Cloudflare Workers. When your app catches an error, it POSTs a
-small payload to this service; `self-heal` clones the repo, diagnoses the bug, fixes it,
-and pushes — which redeploys via [Workers Builds](https://developers.cloudflare.com/workers/ci-cd/builds/).
+small payload to this service; `self-heal` clones the repo, diagnoses the bug, writes a
+fix, and **opens a pull request**.
 
 The whole thing runs **inside a Worker**. No container, no sandbox, no API token for the
 model. If the error is not fixable by a code change (provider outage, invalid user input,
-infrastructure, non-reproducible), the agent reports `NOOP` and nothing is pushed.
+infrastructure, non-reproducible), the agent reports `NOOP` and no branch is created.
+
+**It never writes to your base branch.** The agent has no shell and cannot run your tests,
+so the PR's CI checks are where the fix gets verified and you decide whether it merges.
 
 ## How it works
 
@@ -17,8 +20,9 @@ app error ──► POST /fix (HMAC-signed)
           FixWorkflow (durable steps)
             1. clone          isomorphic-git → SQLite VFS in a Durable Object
             2. agent          AI SDK tool loop on @cf/deepseek-ai/deepseek-v4-pro-0813
-            3. verdict        parse FIX / NOOP  +  git status
-            4. commit+push    only on FIX *and* a non-empty diff
+            3. verdict        parse FIX / NOOP  +  git status  +  protected-path check
+            4. branch + PR    only on FIX *and* a non-empty diff *and* clean paths
+            5. cleanup        drop the checkout from Durable Object storage
 ```
 
 ## Architecture
@@ -37,13 +41,14 @@ app error ──► POST /fix (HMAC-signed)
 
 ### The trade-off, stated plainly
 
-There is no shell, so the agent **cannot run the project's tests, typechecker, or build**
-before pushing. It fixes from reading code alone. The safety net is Workers Builds: a bad
-fix fails the build and never reaches production. If you want the fix validated *before*
-the push, you want a container backend (or a GitHub Actions runner) in the loop instead.
+There is no shell, so the agent **cannot run the project's tests, typechecker, or build**.
+It fixes from reading code alone. That is exactly why it opens a PR rather than pushing:
+your existing CI runs on the diff, and a human reads it, so the verification the agent
+can't do itself happens before the code merges.
 
-The prompt is written to lean hard on this — the agent is told it cannot verify anything
-and must answer `NOOP` when it is not confident from the code it has actually read.
+The prompt leans hard on this — the agent is told it cannot verify anything and must
+answer `NOOP` when it is not confident from the code it has actually read. The PR body
+carries the same warning for whoever reviews it.
 
 ## Setup
 
@@ -54,13 +59,25 @@ pnpm install
 pnpm db:create              # prints the database_id → put it in wrangler.jsonc
 pnpm db:init                # add --remote for the production database
 
-# 2. Secrets (stored in Cloudflare as Worker env secrets, never on disk)
-wrangler secret put TRIGGER_SECRET   # shared HMAC secret (random 32+ chars)
-wrangler secret put GITHUB_TOKEN     # fine-grained PAT with Contents:Write on the repo
+# 2. Trigger secret (stored in Cloudflare, never on disk — piped via stdin so
+#    it never lands in shell history)
+openssl rand -hex 32 | wrangler secret put TRIGGER_SECRET
 
 # 3. Deploy
 pnpm deploy
 ```
+
+Then create the GitHub App by visiting **`/app/setup`** on the deployed Worker. This runs
+GitHub's [App manifest flow](https://docs.github.com/en/apps/sharing-github-apps/registering-a-github-app-from-a-manifest):
+GitHub creates the App and returns its private key *over the API*, which the callback
+writes into D1 — so the key goes straight from GitHub to Cloudflare and never touches your
+machine. The App requests exactly `contents: write` and `pull_requests: write`.
+
+Finish by installing the App on the repositories self-heal may open PRs against (the
+callback page links straight to it). Each run then mints a fresh **installation token**
+that expires in an hour: there is no standing credential capable of writing to your repos.
+
+`/app/setup` is single-use — once a `github_app` row exists, both setup routes return 409.
 
 Update the `vars` in `wrangler.jsonc` (`REPO`, `DEFAULT_BRANCH`, `MODEL`, `MAX_AGENT_STEPS`).
 
@@ -126,12 +143,22 @@ async function reportToSelfHeal(error: unknown, tags: Record<string, string>) {
 - **Rate limit**: `MAX_RUNS_PER_HOUR` (default 5) global budget.
 - **Step ceiling**: `MAX_AGENT_STEPS` (default 24) bounds tool-call rounds per run.
 - **Kill switch**: set `self_heal_settings.enabled` to anything but `1` in D1.
-- **No-op contract**: the agent must reply `FIX` or `NOOP`; commit+push happens only on an
+- **Never touches the base branch**: work is pushed to a fresh `self-heal/<id>-<error>`
+  branch and offered as a PR. Merging is always a human decision.
+- **No-op contract**: the agent must reply `FIX` or `NOOP`; a branch is created only on an
   explicit `FIX` verdict **and** a non-empty `git status`.
-- **Token hygiene**: the GitHub token is passed to the Durable Object's git methods and
-  used there only. It is never written into `.git/config` (auth goes in an HTTP header,
-  not the remote URL) and never lands in the workspace filesystem, so the model's file
-  tools cannot read it.
+- **Protected paths**: a change touching `.git/`, `.github/`, a lockfile, or `.env*` is
+  rejected outright (outcome `blocked`) rather than proposed.
+- **No standing GitHub credential**: self-heal authenticates as a GitHub App and mints a
+  one-hour installation token per run, scoped to the installed repos and to
+  `contents`/`pull_requests`. The token is passed to the Durable Object's git methods and
+  used there only — never written into `.git/config` (auth goes in an HTTP header, not the
+  remote URL) and never into the workspace filesystem, so the model's file tools cannot
+  read it. It is also minted *outside* `step.do`, because Workflows durably persist step
+  return values and would otherwise write the token into the instance record.
+- **Structural verdict**: the agent ends its turn by calling a `report_verdict` tool with a
+  typed `fix`/`noop`, rather than by emitting a text marker. A model that stops without
+  calling it yields no verdict at all instead of an ambiguous one.
 
 ## License
 

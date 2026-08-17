@@ -88,15 +88,23 @@ export class FixAgent extends withWorkspace(FixAgentBase, workspaceOptions) {
     return entries.map((entry) => entry.path);
   }
 
-  /** Stage everything, commit, and push. Throws if the remote rejects. */
-  async commitAndPush(message: string, credentials: GitCredentials): Promise<void> {
+  /**
+   * Stage everything, commit, and push to a fresh remote branch. The local
+   * ref stays the cloned base branch; only `remoteRef` differs, so the base
+   * branch is never written to. Throws if the remote rejects.
+   */
+  async commitAndPush(
+    message: string,
+    credentials: GitCredentials,
+    remoteBranch: string,
+  ): Promise<void> {
     const git = await this.#git();
     await git.add({ paths: [], all: true });
     await git.commit({ message });
     const result = await git.push({
       url: credentials.url,
       ref: credentials.ref,
-      remoteRef: credentials.ref,
+      remoteRef: remoteBranch,
       headers: credentials.headers,
     });
     if (!result.ok) throw new Error(result.error ?? "push rejected by remote");
