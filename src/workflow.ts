@@ -18,8 +18,11 @@ export type FixWorkflowParams = {
   stack?: string;
 };
 
-// Native container filesystem (fast, ephemeral), not the FUSE-backed VFS.
-const WORKDIR = "/tmp/repo";
+// The durable Workspace VFS. /workspace is FUSE-mounted into the container and
+// synced to the DO's SQLite storage. The container's native /tmp does NOT
+// persist across exec calls (the backend may swap in a replacement container),
+// so all agent work must live under /workspace.
+const WORKDIR = "/workspace/repo";
 const PI_TIMEOUT_MS = 25 * 60 * 1000;
 const CLONE_TIMEOUT_MS = 10 * 60 * 1000;
 const INSTALL_TIMEOUT_MS = 14 * 60 * 1000;

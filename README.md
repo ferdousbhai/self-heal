@@ -22,8 +22,8 @@ app error ──► POST /fix (HMAC-signed)
             5. commit+push    only on FIX + non-empty diff
 ```
 
-The agent runs natively in the container filesystem (`/tmp/repo`), **not** the
-FUSE-backed Workspace VFS, so `node_modules` installs and tests run at native speed.
+The agent works in the durable Workspace VFS (`/workspace/repo`), which persists
+across container replacements (the container's native `/tmp` does not).
 
 ## Architecture
 

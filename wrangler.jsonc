@@ -9,7 +9,10 @@
     // owner/repo that errors are fixed in (can be overridden per request).
     "REPO": "ferdousbhai/summon-ghost",
     "DEFAULT_BRANCH": "master",
-    "INSTALL_COMMAND": "pnpm install --frozen-lockfile",
+    // Optional dependency install. The computer Workspace VFS (FUSE) makes a
+    // full install slow for large repos; leave empty to skip and let the agent
+    // install only what it needs on demand.
+    "INSTALL_COMMAND": "",
     // DeepSeek V4 via Cloudflare Workers AI.
     "MODEL": "@cf/deepseek-ai/deepseek-v4-pro-0813",
     "CLOUDFLARE_ACCOUNT_ID": "0af9e0921b880657d84a6c07307f8aef",
@@ -51,7 +54,7 @@
     {
       "binding": "DB",
       "database_name": "self-heal-db",
-      "database_id": "REPLACE_WITH_DATABASE_ID"
+      "database_id": "40f86fb7-177c-4b7b-b2a8-e6576cdaa467"
     }
   ]
 }

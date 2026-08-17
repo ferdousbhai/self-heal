@@ -17,7 +17,7 @@ export type FixPromptInput = {
  */
 export function buildFixPrompt(input: FixPromptInput): string {
   return [
-    `You are an autonomous bug-fixer working inside the repository checked out at /tmp/repo (branch ${input.branch}).`,
+    `You are an autonomous bug-fixer working inside the repository checked out at /workspace/repo (branch ${input.branch}).`,
     "A production error was reported. Diagnose the root cause in the repository code and make the smallest correct fix.",
     "",
     `Error name: ${input.errorName}`,
