@@ -157,7 +157,20 @@ export default {
     const url = new URL(request.url);
 
     if (url.pathname === "/health") {
-      return Response.json({ ok: true });
+      // Booleans only — never the values. `staged` being true means /app/setup
+      // ran but `pnpm app:promote` did not, so a private key is still sitting
+      // in D1 and runs will refuse to start.
+      const staged = await env.DB.prepare("SELECT 1 AS n FROM github_app WHERE id = 1").first<{
+        n: number;
+      }>();
+      const configured = Boolean(env.GITHUB_APP_ID && env.GITHUB_APP_KEY);
+      return Response.json({
+        ok: configured && !staged,
+        githubApp: configured ? "configured" : "missing",
+        stagedKeyInD1: Boolean(staged),
+        ...(staged ? { action: "run `pnpm app:promote` to move the key into Worker secrets" } : {}),
+        ...(configured ? {} : { action: "visit /app/setup" }),
+      });
     }
 
     // One-time GitHub App setup (manifest flow). Both routes refuse to run

@@ -74,8 +74,8 @@ function pemToDer(pem: string): Uint8Array {
   return Uint8Array.from(raw, (character) => character.charCodeAt(0));
 }
 
-/** Sign the App JWT (RS256, ≤10 min per GitHub's limit). */
-async function appJwt({ appId, privateKey }: AppCredentials): Promise<string> {
+/** Sign the App JWT (RS256, ≤10 min per GitHub's limit). Exported for tests. */
+export async function appJwt({ appId, privateKey }: AppCredentials): Promise<string> {
   const der = pemToDer(privateKey);
   const pkcs8 = privateKey.includes("BEGIN RSA PRIVATE KEY") ? pkcs1ToPkcs8(der) : der;
   const key = await crypto.subtle.importKey(
