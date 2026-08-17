@@ -1,7 +1,7 @@
-import type { Env } from "./env";
+import { type Env, intVar } from "./env";
 import { verifySignature } from "./hmac";
 
-export { FixAgent, WorkspaceProxy } from "./agent";
+export { FixAgent } from "./agent";
 export { FixWorkflow } from "./workflow";
 
 type FixRequest = {
@@ -33,8 +33,8 @@ async function admit(env: Env, input: {
     return { ok: false, reason: "self-heal is disabled", code: "disabled", status: 503 };
   }
 
-  const cooldownMs = (Number.parseInt(env.COOLDOWN_HOURS || "24", 10) || 24) * 3_600_000;
-  const maxPerHour = Number.parseInt(env.MAX_RUNS_PER_HOUR || "5", 10) || 5;
+  const cooldownMs = intVar(env.COOLDOWN_HOURS, 24) * 3_600_000;
+  const maxPerHour = intVar(env.MAX_RUNS_PER_HOUR, 5);
 
   const recent = await env.DB.prepare(
     "SELECT id, status, outcome, created_at FROM fix_runs WHERE fingerprint = ? ORDER BY created_at DESC LIMIT 1",

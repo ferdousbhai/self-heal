@@ -7,17 +7,24 @@ export interface Env {
   // vars
   REPO: string;
   DEFAULT_BRANCH: string;
-  INSTALL_COMMAND: string;
   MODEL: string;
-  CLOUDFLARE_ACCOUNT_ID: string;
+  MAX_AGENT_STEPS: string;
   COOLDOWN_HOURS: string;
   MAX_RUNS_PER_HOUR: string;
   // secrets (Cloudflare Worker secrets, set with `wrangler secret put ...`)
   TRIGGER_SECRET: string;
-  CLOUDFLARE_API_KEY: string;
   GITHUB_TOKEN: string;
   // bindings
+  AI: Ai;
   DB: D1Database;
-  FIX_AGENT: DurableObjectNamespace;
+  // Parameterized so the workflow can call FixAgent's typed git methods
+  // (cloneRepo / changedPaths / commitAndPush) over RPC.
+  FIX_AGENT: DurableObjectNamespace<import("./agent").FixAgent>;
   FIX_WORKFLOW: Workflow;
+}
+
+/** Parse a numeric `var`, falling back when unset or degenerate. */
+export function intVar(value: string | undefined, fallback: number): number {
+  const parsed = Number.parseInt(value ?? "", 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }

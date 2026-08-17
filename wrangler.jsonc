@@ -5,20 +5,31 @@
   "compatibility_date": "2026-05-26",
   "compatibility_flags": ["nodejs_compat"],
 
+  // isomorphic-git inflates packfiles out of SQLite on the Worker's own CPU,
+  // and the agent loop runs many tool calls in one request. The default 30s
+  // CPU budget is not enough for either.
+  "limits": {
+    "cpu_ms": 300000
+  },
+
   "vars": {
     // owner/repo that errors are fixed in (can be overridden per request).
     "REPO": "ferdousbhai/summon-ghost",
     "DEFAULT_BRANCH": "master",
-    // Optional dependency install. The computer Workspace VFS (FUSE) makes a
-    // full install slow for large repos; leave empty to skip and let the agent
-    // install only what it needs on demand.
-    "INSTALL_COMMAND": "",
-    // DeepSeek V4 via Cloudflare Workers AI.
+    // DeepSeek V4 Pro via Workers AI — supports function calling, which the
+    // agent loop requires, and a 1M context window.
     "MODEL": "@cf/deepseek-ai/deepseek-v4-pro-0813",
-    "CLOUDFLARE_ACCOUNT_ID": "0af9e0921b880657d84a6c07307f8aef",
+    // Upper bound on tool-call rounds in a single fix attempt.
+    "MAX_AGENT_STEPS": "24",
     // Admission control (defaults; overridable).
     "COOLDOWN_HOURS": "24",
     "MAX_RUNS_PER_HOUR": "5"
+  },
+
+  // Authenticated by the platform — no API token, which is why self-heal has
+  // no CLOUDFLARE_API_KEY secret.
+  "ai": {
+    "binding": "AI"
   },
 
   "workflows": [
@@ -26,17 +37,6 @@
       "name": "fix-workflow",
       "binding": "FIX_WORKFLOW",
       "class_name": "FixWorkflow"
-    }
-  ],
-
-  "containers": [
-    {
-      "class_name": "FixAgent",
-      "image": "./Dockerfile",
-      "instance_type": "standard-2",
-      "max_instances": 5,
-      "rollout_active_grace_period": 0,
-      "rollout_step_percentage": [100]
     }
   ],
 

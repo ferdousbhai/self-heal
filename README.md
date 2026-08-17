@@ -1,12 +1,12 @@
 # self-heal
 
 Self-healing agent for Cloudflare Workers. When your app catches an error, it POSTs a
-small payload to this service; `self-heal` runs [pi](https://github.com/badlogic/pi)
-headlessly inside a Cloudflare **Computer** container to `git clone` the repo, diagnose and
-fix the bug, then commit and push — which redeploys via [Workers Builds](https://developers.cloudflare.com/workers/ci-cd/builds/).
+small payload to this service; `self-heal` clones the repo, diagnoses the bug, fixes it,
+and pushes — which redeploys via [Workers Builds](https://developers.cloudflare.com/workers/ci-cd/builds/).
 
-If the error is not fixable by a code change (provider outage, invalid user input,
-infrastructure, non-reproducible), the agent replies `NOOP` and nothing is pushed.
+The whole thing runs **inside a Worker**. No container, no sandbox, no API token for the
+model. If the error is not fixable by a code change (provider outage, invalid user input,
+infrastructure, non-reproducible), the agent reports `NOOP` and nothing is pushed.
 
 ## How it works
 
@@ -15,25 +15,35 @@ app error ──► POST /fix (HMAC-signed)
                  │  admission control (D1): dedupe · rate limit · kill switch
                  ▼
           FixWorkflow (durable steps)
-            1. clone          git clone (GitHub token in that step's env only)
-            2. install        pnpm install --frozen-lockfile
-            3. agent          pi -p --provider cloudflare-workers-ai --model @cf/deepseek-ai/deepseek-v4-pro-0813
-            4. verdict        parse FIX / NOOP + `git status --porcelain`
-            5. commit+push    only on FIX + non-empty diff
+            1. clone          isomorphic-git → SQLite VFS in a Durable Object
+            2. agent          AI SDK tool loop on @cf/deepseek-ai/deepseek-v4-pro-0813
+            3. verdict        parse FIX / NOOP  +  git status
+            4. commit+push    only on FIX *and* a non-empty diff
 ```
-
-The agent works in the durable Workspace VFS (`/workspace/repo`), which persists
-across container replacements (the container's native `/tmp` does not).
 
 ## Architecture
 
-- **`@cloudflare/computer`** provides the container + `runtime.exec` (the
-  [`examples/container`](https://github.com/cloudflare/computer/tree/main/examples/container)
-  pattern: a Durable Object hosting `computerd`).
-- **pi** is the coding agent, installed in the container image and driven headlessly via
-  `pi -p @prompt.md`.
-- **Workflows** orchestrate the long-running run with retries and durable state.
-- **D1** is the audit log + admission-control store.
+- **`@cloudflare/computer`** supplies a SQLite-backed filesystem in a Durable Object plus
+  an [`isomorphic-git`](https://github.com/isomorphic-git/isomorphic-git) client that runs
+  directly against it — the docs are explicit that git needs "no backend or shell".
+  That is why there is no container: the two capabilities the fix loop needs are the two
+  that work without one.
+- **`@cloudflare/computer/tools`** provides the agent's file tools (`read`, `ls`, `find`,
+  `grep`, `write`, `edit`, `delete`) over that same filesystem.
+- **`workers-ai-provider`** runs the AI SDK loop against the `env.AI` binding. The binding
+  is authenticated by the platform, so **there is no `CLOUDFLARE_API_KEY`**.
+- **Workflows** orchestrate the run with durable steps and retries.
+- **D1** is the audit log and admission-control store.
+
+### The trade-off, stated plainly
+
+There is no shell, so the agent **cannot run the project's tests, typechecker, or build**
+before pushing. It fixes from reading code alone. The safety net is Workers Builds: a bad
+fix fails the build and never reaches production. If you want the fix validated *before*
+the push, you want a container backend (or a GitHub Actions runner) in the loop instead.
+
+The prompt is written to lean hard on this — the agent is told it cannot verify anything
+and must answer `NOOP` when it is not confident from the code it has actually read.
 
 ## Setup
 
@@ -42,20 +52,21 @@ pnpm install
 
 # 1. D1 database
 pnpm db:create              # prints the database_id → put it in wrangler.jsonc
-pnpm db:init
+pnpm db:init                # add --remote for the production database
 
 # 2. Secrets (stored in Cloudflare as Worker env secrets, never on disk)
-wrangler secret put TRIGGER_SECRET      # shared HMAC secret (random 32+ chars)
-wrangler secret put CLOUDFLARE_API_KEY  # a Cloudflare API token with Workers AI access
-wrangler secret put GITHUB_TOKEN        # fine-grained PAT with Contents:Write on the repo
+wrangler secret put TRIGGER_SECRET   # shared HMAC secret (random 32+ chars)
+wrangler secret put GITHUB_TOKEN     # fine-grained PAT with Contents:Write on the repo
 
-# 3. Deploy (builds + pushes the container image from ./Dockerfile)
+# 3. Deploy
 pnpm deploy
 ```
 
-Update the `vars` in `wrangler.jsonc` (repo, branch, install command) for your target.
+Update the `vars` in `wrangler.jsonc` (`REPO`, `DEFAULT_BRANCH`, `MODEL`, `MAX_AGENT_STEPS`).
 
-The container image is built from `./Dockerfile` (Debian + node 22 + git + ripgrep + pi).
+> Deploys take a minute or so to reach every colo. Triggering a run immediately after
+> `wrangler deploy` can hit a colo still serving the previous version, which surfaces as
+> `The RPC receiver does not implement the method "…"`. Wait, then trigger.
 
 ## Triggering
 
@@ -81,7 +92,7 @@ curl -X POST https://self-heal.<your-worker>.workers.dev/fix \
 }
 ```
 
-### Wiring an app to it (e.g. SummonGhost)
+### Wiring an app to it
 
 In your central error handler, fire-and-forget (never throw, never block):
 
@@ -113,12 +124,14 @@ async function reportToSelfHeal(error: unknown, tags: Record<string, string>) {
 - **Dedup**: one run per fingerprint at a time; a `fixed` fingerprint is quiet for
   `COOLDOWN_HOURS` (default 24h).
 - **Rate limit**: `MAX_RUNS_PER_HOUR` (default 5) global budget.
+- **Step ceiling**: `MAX_AGENT_STEPS` (default 24) bounds tool-call rounds per run.
 - **Kill switch**: set `self_heal_settings.enabled` to anything but `1` in D1.
 - **No-op contract**: the agent must reply `FIX` or `NOOP`; commit+push happens only on an
-  explicit `FIX` verdict **and** a non-empty `git diff`.
-- **Token hygiene**: the GitHub token is passed only to the clone and push steps (per-`exec`
-  env), the remote URL is rewritten to public after clone, and the token never reaches the
-  model's shell.
+  explicit `FIX` verdict **and** a non-empty `git status`.
+- **Token hygiene**: the GitHub token is passed to the Durable Object's git methods and
+  used there only. It is never written into `.git/config` (auth goes in an HTTP header,
+  not the remote URL) and never lands in the workspace filesystem, so the model's file
+  tools cannot read it.
 
 ## License
 

@@ -11,39 +11,65 @@ export type FixPromptInput = {
 };
 
 /**
- * The prompt handed to pi. The agent edits files in the checked-out repo but
- * must never commit/push (the orchestrator owns git and the GitHub token).
- * A single FIX/NOOP marker on the first line of the final reply is the verdict.
+ * System prompt for the in-Worker agent loop. The agent has file tools only —
+ * read/ls/find/grep/write/edit/delete over the workspace VFS. There is no
+ * shell and no git tool.
  */
+export const FIX_SYSTEM_PROMPT = [
+  "You are an autonomous bug-fixer. A production error was reported in a deployed web app.",
+  "The repository is checked out at the root of your filesystem: paths like `/src/index.ts` are repository-relative.",
+  "",
+  "Your job: find the root cause in the repository code and make the smallest correct fix.",
+  "",
+  "Method:",
+  "- Start by locating the code named in the stack trace. Use `grep` and `find` before `read`.",
+  "- Never search or read under `.git/` — it holds compressed pack data, not source. Scope every",
+  "  `grep` and `find` to the source directory you care about rather than the repository root.",
+  "- Read enough surrounding code to understand the contract you are changing. Do not edit a file you have not read.",
+  "- Prefer `edit` over `write` so you change only the lines that need changing.",
+  "- Make the smallest correct change. No refactors, no new features, no speculative hardening, no comments explaining the fix.",
+  "",
+  "Constraints:",
+  "- You CANNOT run commands. There is no shell, no test runner, and no typechecker. You cannot verify your fix by executing it.",
+  "  Because of that, only make a change you are confident is correct from reading the code alone. When in doubt, answer NOOP.",
+  "- Do not touch `.git/`, lockfiles, CI config, or any secret material (`.env`, credentials, keys).",
+  "  A change touching those paths is rejected outright and your fix is discarded.",
+  "",
+  "Finish by replying with exactly one marker as the FIRST line of your final message:",
+  "  FIX: <one-line summary of what you changed>",
+  "  NOOP: <one-line reason this cannot be fixed by a code change in this repo>",
+  "",
+  "Answer NOOP — and leave every file unchanged — if the error comes from infrastructure, a provider outage, a third party,",
+  "invalid user input, or if you cannot locate the cause with confidence. A wrong fix is worse than no fix, because it ships.",
+].join("\n");
+
+/** The per-run user message: the error report itself. */
 export function buildFixPrompt(input: FixPromptInput): string {
   return [
-    `You are an autonomous bug-fixer working inside the repository checked out at /workspace/repo (branch ${input.branch}).`,
-    "A production error was reported. Diagnose the root cause in the repository code and make the smallest correct fix.",
+    `Repository: ${input.repo} (branch ${input.branch})`,
+    "",
+    "A production error was reported:",
     "",
     `Error name: ${input.errorName}`,
     ...(input.component ? [`Component: ${input.component}`] : []),
     ...(input.operation ? [`Operation: ${input.operation}`] : []),
     ...(input.message ? [`Message: ${input.message}`] : []),
-    ...(input.stack ? ["Stack trace:", input.stack] : []),
+    ...(input.stack ? ["", "Stack trace:", input.stack] : []),
     "",
-    "Rules:",
-    "- Read the repository first to understand the code before changing anything.",
-    "- Make the smallest correct change. Do not add features, refactors, or speculative code.",
-    "- You may run shell commands to verify (for example pnpm test, pnpm typecheck, pnpm lint).",
-    "- Do NOT run git commit, git push, or any command that mutates git history. The pipeline handles commit and push.",
-    "- Do NOT read or write secret files (.env, credentials, keys).",
-    "",
-    "When finished, reply with exactly one marker as the FIRST line of your final message:",
-    "  FIX: <one-line summary of what you changed>",
-    "  NOOP: <one-line reason this cannot be fixed by a code change in this repo>",
-    "",
-    "If the error is caused by infrastructure, a provider outage, invalid user input, a third party, or cannot be reproduced or understood, you MUST reply NOOP and leave the repository unchanged.",
+    "Diagnose it and fix it, or report NOOP.",
   ].join("\n");
 }
 
-/** Extract the FIX/NOOP verdict from pi's printed output. */
+/**
+ * Extract the FIX/NOOP verdict from the agent's final message.
+ *
+ * Only the first line counts, as the prompt demands. Scanning the whole
+ * message would let prose like "I first considered NOOP: … but settled on
+ * FIX: …" resolve by whichever marker appears earlier, and would match a
+ * quoted copy of the instructions.
+ */
 export function parseVerdict(output: string): FixVerdict {
-  const match = output.match(/^\s*(FIX|NOOP)\s*:/m);
+  const match = (output.trim().split("\n", 1)[0] ?? "").match(/^(FIX|NOOP)\s*:/i);
   if (!match) return "unknown";
   return match[1].toUpperCase() === "NOOP" ? "noop" : "fix";
 }

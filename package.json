@@ -4,7 +4,7 @@
   "private": true,
   "packageManager": "pnpm@10.27.0",
   "type": "module",
-  "description": "Self-healing agent: on a caught error, run pi headlessly in a Cloudflare Computer container to clone, fix, commit, and push.",
+  "description": "Self-healing agent: on a caught error, an in-Worker coding agent clones the repo, fixes the bug, and pushes — entirely on Cloudflare.",
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
@@ -15,7 +15,11 @@
     "db:init:local": "wrangler d1 execute self-heal-db --local --file=db/migrations/0001_init.sql"
   },
   "dependencies": {
-    "@cloudflare/computer": "0.2.1"
+    "@cloudflare/computer": "0.2.1",
+    "@platformatic/vfs": "^0.4.0",
+    "ai": "^7.0.66",
+    "workers-ai-provider": "^4.0.0",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260811.1",
