@@ -14,13 +14,13 @@ so the PR's CI checks are where the fix gets verified and you decide whether it 
 ## How it works
 
 ```
-app error ──► POST /fix (HMAC-signed)
+app error ──► POST /fix (HMAC-signed, timestamped, replay-proof)
                  │  admission control (D1): dedupe · rate limit · kill switch
                  ▼
           FixWorkflow (durable steps)
             1. clone          isomorphic-git → SQLite VFS in a Durable Object
             2. agent          AI SDK tool loop on @cf/deepseek-ai/deepseek-v4-pro-0813
-            3. verdict        parse FIX / NOOP  +  git status  +  protected-path check
+            3. verdict        report_verdict tool call  +  git status  +  protected paths
             4. branch + PR    only on FIX *and* a non-empty diff *and* clean paths
             5. cleanup        drop the checkout from Durable Object storage
 ```
@@ -111,15 +111,25 @@ Update the `vars` in `wrangler.jsonc` (`REPO`, `DEFAULT_BRANCH`, `MODEL`, `MAX_A
 
 ## Triggering
 
-Sign the raw JSON body with `TRIGGER_SECRET` using HMAC-SHA256, hex-encoded, in the
-`x-self-heal-signature` header:
+Sign `<timestamp>.<body>` with `TRIGGER_SECRET` using HMAC-SHA256, hex-encoded. Send the
+digest in `x-self-heal-signature` and the same millisecond timestamp in
+`x-self-heal-timestamp`:
 
 ```bash
+TS=$(date +%s%3N)
+SIG=$(printf '%s.%s' "$TS" "$BODY" | openssl dgst -sha256 -hmac "$TRIGGER_SECRET" | awk '{print $2}')
 curl -X POST https://self-heal.<your-worker>.workers.dev/fix \
   -H 'content-type: application/json' \
-  -H "x-self-heal-signature: $(printf '%s' "$BODY" | openssl dgst -sha256 -hmac "$TRIGGER_SECRET" | awk '{print $2}')" \
+  -H "x-self-heal-timestamp: $TS" \
+  -H "x-self-heal-signature: $SIG" \
   -d "$BODY"
 ```
+
+The timestamp is *inside* the signed material, so it cannot be updated without the secret.
+Requests more than 5 minutes from the Worker's clock are rejected (in both directions —
+future-dating would otherwise extend a captured request's usable life), and an accepted
+signature is recorded so it cannot be replayed even within that window. A replay returns
+`409`.
 
 ```json
 {
@@ -145,15 +155,21 @@ async function reportToSelfHeal(error: unknown, tags: Record<string, string>) {
     operation: tags.operation,
     message: error instanceof Error ? error.message : undefined,
   });
+  const timestamp = String(Date.now());
   const key = await crypto.subtle.importKey(
     "raw", new TextEncoder().encode(env.TRIGGER_SECRET),
     { name: "HMAC", hash: "SHA-256" }, false, ["sign"],
   );
-  const sig = [...new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(body)))]
+  const signed = new TextEncoder().encode(`${timestamp}.${body}`);
+  const sig = [...new Uint8Array(await crypto.subtle.sign("HMAC", key, signed))]
     .map((b) => b.toString(16).padStart(2, "0")).join("");
   await fetch(`${env.SELF_HEAL_URL}/fix`, {
     method: "POST",
-    headers: { "content-type": "application/json", "x-self-heal-signature": sig },
+    headers: {
+      "content-type": "application/json",
+      "x-self-heal-timestamp": timestamp,
+      "x-self-heal-signature": sig,
+    },
     body,
   }).catch(() => {});
 }
@@ -161,7 +177,8 @@ async function reportToSelfHeal(error: unknown, tags: Record<string, string>) {
 
 ## Safety & cost controls
 
-- **HMAC auth** on every trigger (shared `TRIGGER_SECRET`).
+- **HMAC auth** on every trigger (shared `TRIGGER_SECRET`), over `<timestamp>.<body>` with a
+  5-minute window, and each accepted signature is recorded so it cannot be replayed.
 - **Dedup**: one run per fingerprint at a time; a `fixed` fingerprint is quiet for
   `COOLDOWN_HOURS` (default 24h).
 - **Rate limit**: `MAX_RUNS_PER_HOUR` (default 5) global budget.

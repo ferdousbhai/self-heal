@@ -84,6 +84,27 @@ async function admit(env: Env, input: {
 }
 
 /**
+ * Record a signature as used, returning false if it has been seen before.
+ *
+ * The timestamp window makes a captured request useless after a few minutes;
+ * this makes it useless immediately. `INSERT OR IGNORE` plus a primary-key
+ * collision does the check and the claim in one statement, so two concurrent
+ * replays cannot both pass — a read-then-write would race.
+ *
+ * Expired rows are pruned in the same batch, since nothing outside the window
+ * can be replayed anyway.
+ */
+async function claimSignature(env: Env, signature: string, expiresAt: number): Promise<boolean> {
+  const [claim] = await env.DB.batch([
+    env.DB
+      .prepare("INSERT OR IGNORE INTO seen_signatures (signature, expires_at) VALUES (?, ?)")
+      .bind(signature, expiresAt),
+    env.DB.prepare("DELETE FROM seen_signatures WHERE expires_at < ?").bind(Date.now()),
+  ]);
+  return (claim.meta?.changes ?? 0) > 0;
+}
+
+/**
  * GitHub App manifest flow.
  *
  * `/app/setup` renders a self-submitting form that POSTs an App manifest to
@@ -188,9 +209,21 @@ export default {
       return Response.json({ error: "body too large" }, { status: 413 });
     }
 
-    const signature = request.headers.get("x-self-heal-signature");
-    if (!(await verifySignature(env.TRIGGER_SECRET, raw, signature))) {
+    const verified = await verifySignature(
+      env.TRIGGER_SECRET,
+      raw,
+      request.headers.get("x-self-heal-signature"),
+      request.headers.get("x-self-heal-timestamp"),
+    );
+    if (!verified.ok) {
+      // The reason is logged, not returned: distinguishing "bad signature"
+      // from "stale timestamp" for an unauthenticated caller is free
+      // information about how to craft the next attempt.
+      console.warn("[self-heal] rejected trigger", { reason: verified.reason });
       return Response.json({ error: "unauthorized" }, { status: 401 });
+    }
+    if (!(await claimSignature(env, verified.signature, verified.expiresAt))) {
+      return Response.json({ error: "replayed request" }, { status: 409 });
     }
 
     let body: FixRequest;
