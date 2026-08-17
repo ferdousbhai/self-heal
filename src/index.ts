@@ -27,24 +27,31 @@ async function admit(env: Env, input: {
   repo: string;
   branch: string;
 }): Promise<Admission> {
-  const enabled = await env.DB.prepare(
-    "SELECT value FROM self_heal_settings WHERE key = 'enabled'",
-  ).first<{ value: string }>();
+  const cooldownMs = intVar(env.COOLDOWN_HOURS, 24) * 3_600_000;
+  const maxPerHour = intVar(env.MAX_RUNS_PER_HOUR, 5);
+  const since = Date.now() - 3_600_000;
+
+  // The three admission reads are independent, so they go in one batch rather
+  // than three sequential round trips. This runs on the error path of a
+  // production app, so the latency is paid while that app is already unhappy.
+  const [settings, history, hourly] = await env.DB.batch<Record<string, unknown>>([
+    env.DB.prepare("SELECT value FROM self_heal_settings WHERE key = 'enabled'"),
+    env.DB
+      .prepare(
+        "SELECT id, status, outcome, created_at FROM fix_runs WHERE fingerprint = ? ORDER BY created_at DESC LIMIT 1",
+      )
+      .bind(input.fingerprint),
+    env.DB.prepare("SELECT COUNT(*) AS c FROM fix_runs WHERE created_at > ?").bind(since),
+  ]);
+
+  const enabled = settings.results[0] as { value: string } | undefined;
   if (enabled && enabled.value !== "1") {
     return { ok: false, reason: "self-heal is disabled", code: "disabled", status: 503 };
   }
 
-  const cooldownMs = intVar(env.COOLDOWN_HOURS, 24) * 3_600_000;
-  const maxPerHour = intVar(env.MAX_RUNS_PER_HOUR, 5);
-
-  const recent = await env.DB.prepare(
-    "SELECT id, status, outcome, created_at FROM fix_runs WHERE fingerprint = ? ORDER BY created_at DESC LIMIT 1",
-  ).bind(input.fingerprint).first<{
-    id: string;
-    status: string;
-    outcome: string | null;
-    created_at: number;
-  }>();
+  const recent = history.results[0] as
+    | { id: string; status: string; outcome: string | null; created_at: number }
+    | undefined;
 
   if (recent && (recent.status === "queued" || recent.status === "running")) {
     return { ok: false, reason: "a fix is already in progress for this error", code: "in_progress", status: 409 };
@@ -62,10 +69,7 @@ async function admit(env: Env, input: {
     };
   }
 
-  const since = Date.now() - 3_600_000;
-  const count = await env.DB.prepare(
-    "SELECT COUNT(*) AS c FROM fix_runs WHERE created_at > ?",
-  ).bind(since).first<{ c: number }>();
+  const count = hourly.results[0] as { c: number } | undefined;
   if ((count?.c ?? 0) >= maxPerHour) {
     return { ok: false, reason: "hourly run budget exhausted", code: "rate_limited", status: 429 };
   }

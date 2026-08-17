@@ -11,6 +11,7 @@ import { createWorkersAI } from "workers-ai-provider";
 import type { GitCredentials } from "./agent";
 import { type Env, intVar } from "./env";
 import { installationToken } from "./github";
+import { hideGitDir } from "./workspace-guard";
 import {
   type FixPromptInput,
   type FixVerdict,
@@ -111,7 +112,10 @@ export class FixWorkflow extends WorkflowEntrypoint<Env, FixWorkflowParams> {
               system: FIX_SYSTEM_PROMPT,
               prompt: buildFixPrompt(p),
               tools: {
-                ...createAITools({ workspace: ws, read: { maxBytes: 64 * 1024, maxLines: 1200 } }),
+                ...createAITools({
+                  workspace: hideGitDir(ws),
+                  read: { maxBytes: 64 * 1024, maxLines: 1200 },
+                }),
                 report_verdict: REPORT_VERDICT,
               },
               // Ending the loop is an explicit action the model takes, not
