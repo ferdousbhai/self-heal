@@ -44,10 +44,10 @@ pnpm install
 pnpm db:create              # prints the database_id → put it in wrangler.jsonc
 pnpm db:init
 
-# 2. Secrets (all stay in Cloudflare, never on disk)
-wrangler secret put TRIGGER_SECRET      # shared HMAC secret (random 32+ chars)
-wrangler secret put CLOUDFLARE_API_KEY  # Cloudflare API token with Workers AI access
-wrangler secret put GITHUB_TOKEN        # fine-grained PAT with Contents:Write on the repo
+# 2. Secrets — create these in the Cloudflare Secrets Store (dashboard), never on disk:
+#    - self-heal-trigger-secret : shared HMAC secret (random 32+ chars)
+#    - self-heal-workers-ai     : a Cloudflare API token with Workers AI access
+#    - self-heal-github-token   : fine-grained PAT with Contents:Write on the repo
 
 # 3. Deploy (builds + pushes the container image from ./Dockerfile)
 pnpm deploy

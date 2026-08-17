@@ -21,6 +21,26 @@
     "MAX_RUNS_PER_HOUR": "5"
   },
 
+  // Secrets live in the Cloudflare Secrets Store (never on disk); these
+  // bindings reference them by name.
+  "secrets_store_secrets": [
+    {
+      "binding": "TRIGGER_SECRET",
+      "store_id": "a436a6cefedc4acd8bb920cdbc202c1c",
+      "secret_name": "self-heal-trigger-secret"
+    },
+    {
+      "binding": "CLOUDFLARE_API_KEY",
+      "store_id": "a436a6cefedc4acd8bb920cdbc202c1c",
+      "secret_name": "self-heal-workers-ai"
+    },
+    {
+      "binding": "GITHUB_TOKEN",
+      "store_id": "a436a6cefedc4acd8bb920cdbc202c1c",
+      "secret_name": "self-heal-github-token"
+    }
+  ],
+
   "workflows": [
     {
       "name": "fix-workflow",
