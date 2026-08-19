@@ -5,11 +5,11 @@ import {
 } from "cloudflare:workers";
 import { type WorkspaceHandle, getWorkspace } from "@cloudflare/computer";
 import { createAITools } from "@cloudflare/computer/tools";
-import { generateText, hasToolCall, stepCountIs, tool } from "ai";
+import { generateText, hasToolCall, tool } from "ai";
 import { z } from "zod";
 import { createWorkersAI } from "workers-ai-provider";
 import type { GitCredentials } from "./agent";
-import { type Env, intVar } from "./env";
+import type { Env } from "./env";
 import { apiHeaders, installationToken } from "./github";
 import { hideGitDir } from "./workspace-guard";
 import {
@@ -124,8 +124,9 @@ export class FixWorkflow extends WorkflowEntrypoint<Env, FixWorkflowParams> {
                 report_verdict: REPORT_VERDICT,
               },
               // Ending the loop is an explicit action the model takes, not
-              // something inferred from prose it may never write.
-              stopWhen: [stepCountIs(intVar(this.env.MAX_AGENT_STEPS, 24)), hasToolCall("report_verdict")],
+              // something inferred from prose it may never write. No step
+              // ceiling: the loop runs until the model reports its verdict.
+              stopWhen: hasToolCall("report_verdict"),
             });
             const verdictCall = result.steps
               .flatMap((s) => s.toolCalls)

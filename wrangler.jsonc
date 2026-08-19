@@ -19,8 +19,6 @@
     // DeepSeek V4 Pro via Workers AI — supports function calling, which the
     // agent loop requires, and a 1M context window.
     "MODEL": "@cf/deepseek-ai/deepseek-v4-pro-0813",
-    // Upper bound on tool-call rounds in a single fix attempt.
-    "MAX_AGENT_STEPS": "24",
     // Admission control (defaults; overridable).
     "COOLDOWN_HOURS": "24",
     "MAX_RUNS_PER_HOUR": "5"

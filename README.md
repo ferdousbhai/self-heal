@@ -103,7 +103,7 @@ is that sensitive values belong in secrets or a Secrets Store binding. So the ro
 entering shell history. Until you run it, runs fail with "no github app configured" —
 deliberately, so a private key cannot quietly live on in a database.
 
-Update the `vars` in `wrangler.jsonc` (`REPO`, `DEFAULT_BRANCH`, `MODEL`, `MAX_AGENT_STEPS`).
+Update the `vars` in `wrangler.jsonc` (`REPO`, `DEFAULT_BRANCH`, `MODEL`).
 
 > Deploys take a minute or so to reach every colo. Triggering a run immediately after
 > `wrangler deploy` can hit a colo still serving the previous version, which surfaces as
@@ -182,7 +182,6 @@ async function reportToSelfHeal(error: unknown, tags: Record<string, string>) {
 - **Dedup**: one run per fingerprint at a time; a `fixed` fingerprint is quiet for
   `COOLDOWN_HOURS` (default 24h).
 - **Rate limit**: `MAX_RUNS_PER_HOUR` (default 5) global budget.
-- **Step ceiling**: `MAX_AGENT_STEPS` (default 24) bounds tool-call rounds per run.
 - **Kill switch**: set `self_heal_settings.enabled` to anything but `1` in D1.
 - **Never touches the base branch**: work is pushed to a fresh `self-heal/<id>-<error>`
   branch and offered as a PR. Merging is always a human decision.

@@ -8,7 +8,6 @@ export interface Env {
   REPO: string;
   DEFAULT_BRANCH: string;
   MODEL: string;
-  MAX_AGENT_STEPS: string;
   COOLDOWN_HOURS: string;
   MAX_RUNS_PER_HOUR: string;
   // secrets (Cloudflare Worker secrets, set with `wrangler secret put ...`)
