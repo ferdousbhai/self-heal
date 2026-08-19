@@ -1,3 +1,5 @@
+import { z } from "zod";
+
 import { type Env, intVar } from "./env";
 import { convertManifest } from "./github";
 import { verifySignature } from "./hmac";
@@ -5,22 +7,34 @@ import { verifySignature } from "./hmac";
 export { FixAgent } from "./agent";
 export { FixWorkflow } from "./workflow";
 
-type FixRequest = {
-  errorName: string;
-  message?: string;
-  component?: string;
-  operation?: string;
-  stack?: string;
-  repo?: string;
-  branch?: string;
-  fingerprint?: string;
-};
+const FIX_REQUEST = z.object({
+  errorName: z.string().min(1),
+  message: z.string().optional(),
+  component: z.string().optional(),
+  operation: z.string().optional(),
+  stack: z.string().optional(),
+  repo: z.string().optional(),
+  branch: z.string().optional(),
+  fingerprint: z.string().optional(),
+});
 
 const MAX_BODY_BYTES = 64 * 1024;
 
 type Admission =
   | { ok: true; runId: string }
   | { ok: false; reason: string; code: string; status: number };
+
+/** `/health` payload. Booleans and states only — never credential values. */
+type HealthReport = {
+  ok: boolean;
+  githubApp: "configured" | "missing";
+  stagedKeyInD1: boolean;
+  action?: string;
+};
+
+type SettingsRow = { value: string };
+type RecentRunRow = { id: string; status: string; outcome: string | null; created_at: number };
+type HourlyCountRow = { c: number };
 
 async function admit(env: Env, input: {
   fingerprint: string;
@@ -34,7 +48,11 @@ async function admit(env: Env, input: {
   // The three admission reads are independent, so they go in one batch rather
   // than three sequential round trips. This runs on the error path of a
   // production app, so the latency is paid while that app is already unhappy.
-  const [settings, history, hourly] = await env.DB.batch<Record<string, unknown>>([
+  //
+  // SAFETY: `batch` applies a single row type to every statement, so it cannot
+  // express three different shapes. The tuple restates each statement's row
+  // type, in the order the statements are passed below.
+  const [settings, history, hourly] = (await env.DB.batch([
     env.DB.prepare("SELECT value FROM self_heal_settings WHERE key = 'enabled'"),
     env.DB
       .prepare(
@@ -42,16 +60,14 @@ async function admit(env: Env, input: {
       )
       .bind(input.fingerprint),
     env.DB.prepare("SELECT COUNT(*) AS c FROM fix_runs WHERE created_at > ?").bind(since),
-  ]);
+  ])) as [D1Result<SettingsRow>, D1Result<RecentRunRow>, D1Result<HourlyCountRow>];
 
-  const enabled = settings.results[0] as { value: string } | undefined;
+  const enabled: SettingsRow | undefined = settings.results[0];
   if (enabled && enabled.value !== "1") {
     return { ok: false, reason: "self-heal is disabled", code: "disabled", status: 503 };
   }
 
-  const recent = history.results[0] as
-    | { id: string; status: string; outcome: string | null; created_at: number }
-    | undefined;
+  const recent: RecentRunRow | undefined = history.results[0];
 
   if (recent && (recent.status === "queued" || recent.status === "running")) {
     return { ok: false, reason: "a fix is already in progress for this error", code: "in_progress", status: 409 };
@@ -69,7 +85,7 @@ async function admit(env: Env, input: {
     };
   }
 
-  const count = hourly.results[0] as { c: number } | undefined;
+  const count: HourlyCountRow | undefined = hourly.results[0];
   if ((count?.c ?? 0) >= maxPerHour) {
     return { ok: false, reason: "hourly run budget exhausted", code: "rate_limited", status: 429 };
   }
@@ -185,13 +201,15 @@ export default {
         n: number;
       }>();
       const configured = Boolean(env.GITHUB_APP_ID && env.GITHUB_APP_KEY);
-      return Response.json({
+      const health: HealthReport = {
         ok: configured && !staged,
         githubApp: configured ? "configured" : "missing",
         stagedKeyInD1: Boolean(staged),
-        ...(staged ? { action: "run `pnpm app:promote` to move the key into Worker secrets" } : {}),
-        ...(configured ? {} : { action: "visit /app/setup" }),
-      });
+      };
+      // A missing App is the more urgent of the two, so it wins the slot.
+      if (staged) health.action = "run `pnpm app:promote` to move the key into Worker secrets";
+      if (!configured) health.action = "visit /app/setup";
+      return Response.json(health);
     }
 
     // One-time GitHub App setup (manifest flow). Both routes refuse to run
@@ -226,15 +244,17 @@ export default {
       return Response.json({ error: "replayed request" }, { status: 409 });
     }
 
-    let body: FixRequest;
+    let json: unknown;
     try {
-      body = JSON.parse(raw) as FixRequest;
+      json = JSON.parse(raw);
     } catch {
       return Response.json({ error: "invalid json" }, { status: 400 });
     }
-    if (!body.errorName || typeof body.errorName !== "string") {
+    const decoded = FIX_REQUEST.safeParse(json);
+    if (!decoded.success) {
       return Response.json({ error: "errorName is required" }, { status: 400 });
     }
+    const body = decoded.data;
 
     const repo = (body.repo || env.REPO || "").trim();
     const branch = (body.branch || env.DEFAULT_BRANCH || "main").trim();

@@ -17,7 +17,7 @@
 import { DurableObject } from "cloudflare:workers";
 import {
   type DurableObjectStorageLike,
-  type WorkspaceHandle,
+  type WorkspaceClient,
   type WorkspaceOptions,
   getWorkspace,
   withWorkspace,
@@ -36,26 +36,42 @@ export type GitCredentials = {
   headers?: Record<string, string>;
 };
 
-class FixAgentBase extends DurableObject<Env> {}
-
-// Needs an explicit return type: an inferred one would reference FixAgent
-// through its own base expression, and `ctx` is protected on DurableObject.
-function workspaceOptions(self: InstanceType<typeof FixAgentBase>): WorkspaceOptions {
-  const { ctx } = self as unknown as { ctx: DurableObjectState };
-  return {
-    storage: ctx.storage as unknown as DurableObjectStorageLike,
-    // Opt in to the git client; without this `ws.git` is undefined. The
-    // subpath pulls in isomorphic-git, keeping it out of the default graph.
-    git: createGitClient(),
-    defaultGitIdentity: { ...GIT_IDENTITY },
-  };
+/**
+ * `WorkspaceClient.git` is declared `any` by the library, because a workspace
+ * only has a git client if one was configured. `workspaceOptions` below passes
+ * `createGitClient()`, so this workspace always has the typed client; naming
+ * that fact once here keeps the rest of the file honestly typed.
+ */
+function gitClient(workspace: WorkspaceClient): GitClient {
+  return workspace.git;
 }
 
-export class FixAgent extends withWorkspace(FixAgentBase, workspaceOptions) {
+class FixAgentBase extends DurableObject<Env> {
+  /**
+   * `withWorkspace` takes a plain function, which cannot reach the protected
+   * `ctx`; a static of the class can. Kept static so the DO's RPC surface
+   * gains nothing.
+   */
+  static workspaceOptions(self: FixAgentBase): WorkspaceOptions {
+    return {
+      // SAFETY: structurally the same object — `DurableObjectStorageLike`
+      // declares `sql.exec<Row extends object>`, where the platform type
+      // constrains `Row` to `Record<string, SqlStorageValue>`, and TypeScript
+      // will not relate the two generic signatures.
+      storage: self.ctx.storage as DurableObjectStorageLike,
+      // Opt in to the git client; without this `ws.git` is undefined. The
+      // subpath pulls in isomorphic-git, keeping it out of the default graph.
+      git: createGitClient(),
+      defaultGitIdentity: { ...GIT_IDENTITY },
+    };
+  }
+}
+
+export class FixAgent extends withWorkspace(FixAgentBase, FixAgentBase.workspaceOptions) {
   /** The DO-local `Workspace`, whose `git` is the typed client (RPC callers
-   *  get the cli-only stub instead). Typed `any` by the library. */
+   *  get the cli-only stub instead). */
   async #git(): Promise<GitClient> {
-    return (await getWorkspace(this as unknown as WorkspaceHandle)).git as GitClient;
+    return gitClient(await getWorkspace(this));
   }
 
   /**
@@ -69,11 +85,11 @@ export class FixAgent extends withWorkspace(FixAgentBase, workspaceOptions) {
    * than useless.
    */
   async cloneRepo(credentials: GitCredentials): Promise<void> {
-    const ws = await getWorkspace(this as unknown as WorkspaceHandle);
-    for (const entry of await ws.fs.readdir("/")) {
-      await ws.fs.rm(`/${entry.name}`, { recursive: true, force: true });
+    const workspace = await getWorkspace(this);
+    for (const entry of await workspace.fs.readdir("/")) {
+      await workspace.fs.rm(`/${entry.name}`, { recursive: true, force: true });
     }
-    await (ws.git as GitClient).clone({
+    await gitClient(workspace).clone({
       url: credentials.url,
       ref: credentials.ref,
       depth: 1,

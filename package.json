@@ -14,7 +14,8 @@
     "db:migrate": "wrangler d1 migrations apply self-heal-db --remote",
     "db:migrate:local": "wrangler d1 migrations apply self-heal-db",
     "app:promote": "bash scripts/promote-app-key.sh",
-    "db:list": "wrangler d1 migrations list self-heal-db --remote"
+    "db:list": "wrangler d1 migrations list self-heal-db --remote",
+    "lint": "oxlint"
   },
   "dependencies": {
     "@cloudflare/computer": "0.2.1",
@@ -25,6 +26,8 @@
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260811.1",
+    "@oxlint/plugins": "1.78.0",
+    "oxlint": "1.78.0",
     "typescript": "^6.0.3",
     "wrangler": "^4.107.1"
   }

@@ -10,15 +10,23 @@ import { z } from "zod";
 import { createWorkersAI } from "workers-ai-provider";
 import type { GitCredentials } from "./agent";
 import { type Env, intVar } from "./env";
-import { installationToken } from "./github";
+import { apiHeaders, installationToken } from "./github";
 import { hideGitDir } from "./workspace-guard";
 import {
   type FixPromptInput,
-  type FixVerdict,
   FIX_SYSTEM_PROMPT,
   buildFixPrompt,
   parseVerdict,
 } from "./prompt";
+
+const VERDICT_REPORT = z.object({
+  verdict: z
+    .enum(["fix", "noop"])
+    .describe("`fix` if you made edits that resolve the error; `noop` if it is not fixable here."),
+  summary: z
+    .string()
+    .describe("One line: what you changed, or why this cannot be fixed by a code change."),
+});
 
 /**
  * The verdict is a tool call, not prose. A model that simply stops talking —
@@ -29,16 +37,14 @@ import {
 const REPORT_VERDICT = tool({
   description:
     "Report your final verdict and end your turn. Call this exactly once, when you are finished.",
-  inputSchema: z.object({
-    verdict: z
-      .enum(["fix", "noop"])
-      .describe("`fix` if you made edits that resolve the error; `noop` if it is not fixable here."),
-    summary: z
-      .string()
-      .describe("One line: what you changed, or why this cannot be fixed by a code change."),
-  }),
+  inputSchema: VERDICT_REPORT,
   execute: async () => ({ recorded: true }),
 });
+
+/** GitHub's pull-request response, read back for the URL (or the error). */
+const PULL_REQUEST_RESPONSE = z
+  .object({ html_url: z.string().optional(), message: z.string().optional() })
+  .catch({});
 
 export type FixWorkflowParams = FixPromptInput & { runId: string };
 
@@ -121,11 +127,12 @@ export class FixWorkflow extends WorkflowEntrypoint<Env, FixWorkflowParams> {
               // something inferred from prose it may never write.
               stopWhen: [stepCountIs(intVar(this.env.MAX_AGENT_STEPS, 24)), hasToolCall("report_verdict")],
             });
-            const reported = result.steps
+            const verdictCall = result.steps
               .flatMap((s) => s.toolCalls)
-              .find((call) => call.toolName === "report_verdict")?.input as
-              | { verdict: FixVerdict; summary: string }
-              | undefined;
+              .find((call) => call.toolName === "report_verdict");
+            const reported = verdictCall
+              ? VERDICT_REPORT.safeParse(verdictCall.input).data
+              : undefined;
             return {
               ok: true as const,
               verdict: reported?.verdict ?? parseVerdict(result.text),
@@ -207,14 +214,14 @@ export class FixWorkflow extends WorkflowEntrypoint<Env, FixWorkflowParams> {
     return this.env.FIX_AGENT.get(this.env.FIX_AGENT.idFromName(`fix-${runId}`));
   }
 
-  /**
-   * The DO stub as a workspace handle. `WorkspaceStubHost` can never be
-   * satisfied structurally by a `DurableObjectStub` — RPC projects the return
-   * of `__getWorkspaceStub` to `Stub<WorkspaceStub>`, and `WorkspaceStub`
-   * carries a `#private` brand. Library-side nominal typing, named once here.
-   */
+  /** The DO stub as a workspace handle. */
   private handle(runId: string): WorkspaceHandle {
-    return this.agent(runId) as unknown as WorkspaceHandle;
+    // SAFETY: `withWorkspace` gives FixAgent the `__getWorkspaceStub` method
+    // this needs, but RPC projects its return to `Stub<WorkspaceStub>` and
+    // `WorkspaceStub` carries a `#private` brand — so no `DurableObjectStub`
+    // can satisfy `WorkspaceStubHost` structurally. Library-side nominal
+    // typing, named once here.
+    return this.agent(runId) as WorkspaceHandle;
   }
 
   /**
@@ -260,18 +267,11 @@ export class FixWorkflow extends WorkflowEntrypoint<Env, FixWorkflowParams> {
 
     const response = await fetch(`https://api.github.com/repos/${repo}/pulls`, {
       method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        Accept: "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-        // GitHub rejects API requests without one.
-        "User-Agent": "self-heal",
-        "content-type": "application/json",
-      },
+      headers: { ...apiHeaders(token), "content-type": "application/json" },
       body: JSON.stringify({ title, head, base, body, maintainer_can_modify: true }),
     });
 
-    const payload = (await response.json()) as { html_url?: string; message?: string };
+    const payload = PULL_REQUEST_RESPONSE.parse(await response.json());
     if (!response.ok || !payload.html_url) {
       throw new Error(`github ${response.status}: ${payload.message ?? "no pull request url"}`);
     }

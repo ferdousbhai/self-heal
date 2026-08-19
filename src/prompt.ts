@@ -35,7 +35,7 @@ export const FIX_SYSTEM_PROMPT = [
   "- Do not touch `.git/`, lockfiles, CI config, or any secret material (`.env`, credentials, keys).",
   "  A change touching those paths is rejected outright and your fix is discarded.",
   "",
-"You MUST finish by calling the `report_verdict` tool exactly once. It is the only way to end your turn,",
+  "You MUST finish by calling the `report_verdict` tool exactly once. It is the only way to end your turn,",
   "and nothing you write as prose is read. Call it with `fix` once your edits are complete, or `noop` to give up.",
   "",
   "Report `noop` — and leave every file unchanged — if the error comes from infrastructure, a provider outage, a third party,",

@@ -13,57 +13,79 @@
  *   2. filter `.git/` entries out of results, since a search rooted at `/` is
  *      a perfectly legal call that would otherwise return them anyway.
  *
+ * The wrapper is an explicit re-implementation of the filesystem surface the
+ * tools actually call, rather than a catch-all proxy: every guarded method is
+ * named here, and a method that is not named is not reachable at all.
+ *
  * This wraps only the workspace handed to the file tools. Git itself runs
  * against the DO-local workspace and is unaffected.
  */
 
+import type { WorkspaceClient } from "@cloudflare/computer";
+import type { CreateAIToolsOptions } from "@cloudflare/computer/tools";
+
+/** The workspace surface `createAITools` reads. */
+type ToolWorkspace = CreateAIToolsOptions["workspace"];
+type ToolFilesystem = ToolWorkspace["fs"];
+
 /** Matches `.git` as a path segment. `.gitignore` is deliberately not matched. */
 const GIT_DIR = /(^|\/)\.git(\/|$)/;
 
-/** Index of the path argument per method; `grep(pattern, path, options)`. */
-const PATH_ARGUMENT: Record<string, number> = { grep: 1 };
-
-function isGitPath(value: unknown): boolean {
-  return typeof value === "string" && GIT_DIR.test(value);
+function rejectGitPath(path: string): void {
+  if (GIT_DIR.test(path)) {
+    throw new Error(
+      `.git/ is not readable by the agent (${path}) — it holds compressed pack data, not source`,
+    );
+  }
 }
 
-function withoutGitEntries(result: unknown): unknown {
-  if (!Array.isArray(result)) return result;
-  return result.filter((entry) => {
-    if (typeof entry === "string") return !isGitPath(entry);
-    if (entry && typeof entry === "object") {
-      const { path, name, parentPath } = entry as {
-        path?: string;
-        name?: string;
-        parentPath?: string;
-      };
-      const resolved = path ?? (parentPath ? `${parentPath}/${name}` : name);
-      return !isGitPath(resolved);
-    }
-    return true;
-  });
+function outsideGitDir<T>(entries: T[], pathOf: (entry: T) => string): T[] {
+  return entries.filter((entry) => !GIT_DIR.test(pathOf(entry)));
 }
 
 /** Wrap a workspace client so its filesystem cannot see `.git/`. */
-export function hideGitDir<T extends { fs: unknown }>(workspace: T): T {
-  const fs = new Proxy(workspace.fs as Record<string, unknown>, {
-    get(target, property, receiver) {
-      const value = Reflect.get(target, property, receiver);
-      if (typeof value !== "function" || typeof property !== "string") return value;
-      const index = PATH_ARGUMENT[property] ?? 0;
-      return async (...args: unknown[]) => {
-        if (isGitPath(args[index])) {
-          throw new Error(
-            `.git/ is not readable by the agent (${String(args[index])}) — it holds compressed pack data, not source`,
-          );
-        }
-        return withoutGitEntries(await (value as (...a: unknown[]) => unknown).apply(target, args));
-      };
-    },
-  });
+export function hideGitDir(workspace: WorkspaceClient): ToolWorkspace {
+  const { fs } = workspace;
 
-  return new Proxy(workspace, {
-    get: (target, property, receiver) =>
-      property === "fs" ? fs : Reflect.get(target, property, receiver),
-  });
+  // Every method is `async` so that a rejected path surfaces as a rejected
+  // promise rather than a synchronous throw, whichever way a caller invokes it.
+  const guarded: ToolFilesystem = {
+    stat: async (path) => {
+      rejectGitPath(path);
+      return fs.stat(path);
+    },
+    readFile: async (path, options) => {
+      rejectGitPath(path);
+      if (options === undefined) return fs.readFile(path);
+      return fs.readFile(path, options);
+    },
+    writeFile: async (path, content, options) => {
+      rejectGitPath(path);
+      return fs.writeFile(path, content, options);
+    },
+    mkdir: async (path, options) => {
+      rejectGitPath(path);
+      return fs.mkdir(path, options);
+    },
+    rm: async (path, options) => {
+      rejectGitPath(path);
+      return fs.rm(path, options);
+    },
+    find: async (directory, pattern, options) => {
+      rejectGitPath(directory);
+      return outsideGitDir(await fs.find(directory, pattern, options), (entry) => entry.path);
+    },
+    grep: async (pattern, path, options) => {
+      rejectGitPath(path);
+      return outsideGitDir(await fs.grep(pattern, path, options), (match) => match.path);
+    },
+    readdir: async (path, options) => {
+      rejectGitPath(path);
+      return outsideGitDir(await fs.readdir(path, options), (entry) => entry.name);
+    },
+  };
+
+  // `git` and `artifacts` are lazy getters that mint an RPC stub on read, so
+  // they are deliberately not carried over: the tools never ask for them.
+  return { fs: guarded, runtime: workspace.runtime, assets: workspace.assets };
 }

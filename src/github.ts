@@ -12,11 +12,14 @@
  * by this Worker — they never touch a developer machine.
  */
 
+import { z } from "zod";
+
 export type AppCredentials = { appId: string; privateKey: string };
 
 const API = "https://api.github.com";
 
-function apiHeaders(auth: string): Record<string, string> {
+/** The headers every GitHub REST call needs, given a JWT or a token. */
+export function apiHeaders(auth: string) {
   return {
     Authorization: `Bearer ${auth}`,
     Accept: "application/vnd.github+json",
@@ -26,12 +29,12 @@ function apiHeaders(auth: string): Record<string, string> {
   };
 }
 
-function base64url(bytes: ArrayBuffer | Uint8Array | string): string {
-  const raw =
-    typeof bytes === "string"
-      ? bytes
-      : String.fromCharCode(...new Uint8Array(bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes)));
+function base64url(raw: string): string {
   return btoa(raw).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function base64urlBytes(bytes: ArrayBuffer): string {
+  return base64url(String.fromCharCode(...new Uint8Array(bytes)));
 }
 
 /** DER type-length-value wrapper with long-form lengths. */
@@ -74,13 +77,13 @@ function pemToDer(pem: string): Uint8Array {
   return Uint8Array.from(raw, (character) => character.charCodeAt(0));
 }
 
-/** Sign the App JWT (RS256, ≤10 min per GitHub's limit). Exported for tests. */
+/** Sign the App JWT (RS256, ≤10 min per GitHub's limit). */
 export async function appJwt({ appId, privateKey }: AppCredentials): Promise<string> {
   const der = pemToDer(privateKey);
   const pkcs8 = privateKey.includes("BEGIN RSA PRIVATE KEY") ? pkcs1ToPkcs8(der) : der;
   const key = await crypto.subtle.importKey(
     "pkcs8",
-    pkcs8 as unknown as ArrayBuffer,
+    pkcs8,
     { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
     false,
     ["sign"],
@@ -96,8 +99,29 @@ export async function appJwt({ appId, privateKey }: AppCredentials): Promise<str
     key,
     new TextEncoder().encode(signingInput),
   );
-  return `${signingInput}.${base64url(signature)}`;
+  return `${signingInput}.${base64urlBytes(signature)}`;
 }
+
+/**
+ * GitHub responses, read only for the handful of fields this module acts on.
+ * `.catch({})` keeps a malformed or non-JSON-object body on the same path as a
+ * missing field: the caller's own check throws with the HTTP status.
+ */
+const INSTALLATION = z.object({ id: z.number().optional() }).catch({});
+
+const ACCESS_TOKEN = z
+  .object({ token: z.string().optional(), message: z.string().optional() })
+  .catch({});
+
+const MANIFEST_CONVERSION = z
+  .object({
+    id: z.number().optional(),
+    slug: z.string().optional(),
+    pem: z.string().optional(),
+    html_url: z.string().optional(),
+    message: z.string().optional(),
+  })
+  .catch({});
 
 /**
  * Mint an installation token for `owner/repo`. Scoped to the repositories the
@@ -117,13 +141,13 @@ export async function installationToken(
       `github app is not installed on ${repo} (${installation.status}) — install it at https://github.com/settings/installations`,
     );
   }
-  const { id } = (await installation.json()) as { id: number };
+  const { id } = INSTALLATION.parse(await installation.json());
 
   const minted = await fetch(`${API}/app/installations/${id}/access_tokens`, {
     method: "POST",
     headers: apiHeaders(jwt),
   });
-  const payload = (await minted.json()) as { token?: string; message?: string };
+  const payload = ACCESS_TOKEN.parse(await minted.json());
   if (!minted.ok || !payload.token) {
     throw new Error(`github ${minted.status}: ${payload.message ?? "no installation token"}`);
   }
@@ -146,13 +170,7 @@ export async function convertManifest(
       "User-Agent": "self-heal",
     },
   });
-  const payload = (await response.json()) as {
-    id?: number;
-    slug?: string;
-    pem?: string;
-    html_url?: string;
-    message?: string;
-  };
+  const payload = MANIFEST_CONVERSION.parse(await response.json());
   if (!response.ok || !payload.pem || !payload.id) {
     throw new Error(`github ${response.status}: ${payload.message ?? "manifest conversion failed"}`);
   }

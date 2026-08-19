@@ -4,3 +4,8 @@ dist
 .dev.vars
 worker-configuration.d.ts
 package-lock.json
+
+# Local secrets — never commit; use Cloudflare secrets/Secrets Store
+.env
+.env.*
+!.env.example
